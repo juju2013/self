@@ -3,11 +3,25 @@
 import sys, os
 from enum import Enum
 
+################### HELPERS ###########################
+def read_fields(f, fields):
+  header={}
+  for (flen, fname, ftype) in fields:
+    header[fname]=ftype.from_bytes(f.read(flen), byteorder=endianness())
+  return header
+
+def endianness():
+  return 'big'
+
+def littleendian():
+  return 'little'
+
+
 ######################################################################
 ### ELF header definition
 ######################################################################
 class e_elfenum(Enum):
-
+  
   @classmethod
   def from_bytes(cls, ba, byteorder='little'):
     return cls(int.from_bytes(ba, byteorder=byteorder))
@@ -15,6 +29,12 @@ class e_elfenum(Enum):
 class e_endian(e_elfenum):
   little = 1
   big = 2
+  
+  def __init__(self, endian):
+    super().__init__()
+    if 1==endian:
+      global endianness
+      endianness = littleendian
   
 class e_type(e_elfenum):
   relocatable = 1
@@ -193,7 +213,7 @@ class string_table:
   strings={}
   
   @classmethod
-  def from_bytes(cls, ba, byteorder='little'):
+  def from_bytes(cls, ba):
     cls=cls()
     cls.strings={}
     stridx = 0
@@ -269,59 +289,52 @@ symbol_fields32 = (
 )
 
 
-
 ######################################################################
 ### do the magic
 ######################################################################
 def parse_elf_header(f):
-  ei_class=e_class(int.from_bytes(f.read(1), byteorder='big'))
-  ei_endian=e_endian(int.from_bytes(f.read(1), byteorder='big'))
-  fields = elf_fields32
+  ei_class=e_class(int.from_bytes(f.read(1), byteorder=endianness()))
+  ei_endian=e_endian(int.from_bytes(f.read(1), byteorder=endianness()))
+  file_fields = elf_fields32
   program_fields = program_fields32
   section_fields = section_fileds32
   sections={}
   if ei_class.name == "bit62":
-    fields = elf_fields64
+    file_fields = elf_fields64
     program_fields = program_fields64
     section_fields = section_fileds64
-  elf_header={"ei_class":ei_class, "ei_endian":ei_endian,}
-  for (flen, fname, ftype) in fields:
-    v = f.read(flen)
-    elf_header[fname]=ftype.from_bytes(v, byteorder=ei_endian.name)
+  elf_header=read_fields(f, file_fields)
+  elf_header["ei_class"]=ei_class
+  elf_header["ei_endian"]=ei_endian
+  
   print("********** file header **********")
   print("%s"%elf_header)
   print("")
 
   p = elf_header["e_phoff"] 
   if p >0:
-    program_headers=[]
+    program_headers={}
     for nprg in range(elf_header["e_phnum"]):
-      program_header={"program_index":nprg}
       f.seek(p+nprg*elf_header["e_phentsize"], 0) 
-      for (flen, fname, ftype) in program_fields:
-        v = f.read(flen)
-        program_header[fname]=ftype.from_bytes(v, byteorder=ei_endian.name)
-      program_headers.append(program_header)
+      program_headers[nprg]=read_fields(f, program_fields)
+
     print("********** program header **********")
-    for p in program_headers:
-      print("%s"%p)
+    for n, p in program_headers.items():
+      print("%s:%s"% (n,p))
     print("")
 
   p=elf_header["e_shoff"]
   if p>0:
     section_headers={}
     for nsec in range(elf_header["e_shnum"]):
-      section_header = {}
+      {}
       f.seek(p+nsec*elf_header["e_shentsize"], 0)
-      #print("  ...scanning @ %08x"%(p+nsec*elf_header["e_shentsize"]))
-      for (flen, fname, ftype) in section_fields:
-        v = f.read(flen)
-        section_header[fname]=ftype.from_bytes(v, byteorder=ei_endian.name)
+      section_header = read_fields(f, section_fields)
       if section_header["sh_type"] != e_shtype.SHT_NULL:
         section_headers[nsec]=section_header
         if e_shtype.SHT_STRTAB == section_header["sh_type"]:
           f.seek(section_header["sh_offset"], 0)
-          section_header["string_table"]=string_table.from_bytes(f.read(section_header["sh_size"]), byteorder=ei_endian.name) # just to keep the same samentic, endian is ignored for string
+          section_header["string_table"]=string_table.from_bytes(f.read(section_header["sh_size"]))
 
     # populate strings in section header
     if elf_header["e_shstrndx"]>0:
@@ -341,21 +354,20 @@ def parse_elf_header(f):
       except:
         print("*** ERROR: string table section not found")
         # don't fail here
+
     print("********** section header **********")
     for i,s in section_headers.items():
-      print("section %s=%s"%(i,s))
+      print("%s:%s"%(i,s))
     print("")
     
-    # parse symtables
+    # populate symtables
     symbols={}
     i=0
     if "SYMTAB" in sections.keys():
       s=sections["SYMTAB"]
       f.seek(s["sh_offset"], 0)
       for idx in range(0, s["sh_size"], s["sh_entsize"]):
-        symbol={}
-        for (flen, fname, ftype) in symbol_fields32:
-          symbol[fname]=ftype.from_bytes(f.read(flen), byteorder=ei_endian.name)
+        symbol=read_fields(f, symbol_fields32)
         if idx > 0 and symbol["st_name"] > 0:
           try:
             symbol["name"]=sections["STRINGS"][symbol["st_name"]]
@@ -365,12 +377,14 @@ def parse_elf_header(f):
           symbol["name"]=""
         symbols[i]=symbol
         i += 1
+        
     print("********** symbols **********")
     print(" #:ADDRESS \tSIZE\tBIND    \tTYPE      \tSECTION \tNAME")
     for i, sym in symbols.items():
       print("%s:%08x\t%s\t%s\t%s\t%s\t%s"%(
         i, sym["st_value"], sym["st_size"], sym["st_info"].st_bind.name, sym["st_info"].st_type.name, sym["st_shndx"], sym["name"]
       ))
+    print("")
     
 def main():
   print("self.py: simple elf file parser, (c) 2018 by juju2013")
