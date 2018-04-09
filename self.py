@@ -290,9 +290,22 @@ symbol_fields32 = (
 
 
 ######################################################################
+### elf file container
+######################################################################
+class elff:
+  
+  def dump(self, obj, title=""):
+    print("***********%s***************"%title)
+    print("%s"%obj)
+    print("")
+
+######################################################################
 ### do the magic
 ######################################################################
 def parse_elf_header(f):
+  ELF = elff()
+  
+  # populate file header
   ei_class=e_class(int.from_bytes(f.read(1), byteorder=endianness()))
   ei_endian=e_endian(int.from_bytes(f.read(1), byteorder=endianness()))
   file_fields = elf_fields32
@@ -303,51 +316,48 @@ def parse_elf_header(f):
     file_fields = elf_fields64
     program_fields = program_fields64
     section_fields = section_fileds64
-  elf_header=read_fields(f, file_fields)
-  elf_header["ei_class"]=ei_class
-  elf_header["ei_endian"]=ei_endian
+  ELF.elf_header=read_fields(f, file_fields)
+  ELF.elf_header["ei_class"]=ei_class
+  ELF.elf_header["ei_endian"]=ei_endian
   
-  print("********** file header **********")
-  print("%s"%elf_header)
-  print("")
-
-  p = elf_header["e_phoff"] 
+  ELF.dump(ELF.elf_header, "file header")
+  
+  # populate program header
+  p = ELF.elf_header["e_phoff"] 
   if p >0:
-    program_headers={}
-    for nprg in range(elf_header["e_phnum"]):
-      f.seek(p+nprg*elf_header["e_phentsize"], 0) 
-      program_headers[nprg]=read_fields(f, program_fields)
+    ELF.program_headers={}
+    for nprg in range(ELF.elf_header["e_phnum"]):
+      f.seek(p+nprg*ELF.elf_header["e_phentsize"], 0) 
+      ELF.program_headers[nprg]=read_fields(f, program_fields)
 
-    print("********** program header **********")
-    for n, p in program_headers.items():
-      print("%s:%s"% (n,p))
-    print("")
+    ELF.dump(ELF.program_headers, "program header")
 
-  p=elf_header["e_shoff"]
+  # populate section header
+  p=ELF.elf_header["e_shoff"]
   if p>0:
-    section_headers={}
-    for nsec in range(elf_header["e_shnum"]):
-      {}
-      f.seek(p+nsec*elf_header["e_shentsize"], 0)
+    ELF.section_headers={}
+    ELF.sections={}
+    for nsec in range(ELF.elf_header["e_shnum"]):
+      f.seek(p+nsec*ELF.elf_header["e_shentsize"], 0)
       section_header = read_fields(f, section_fields)
       if section_header["sh_type"] != e_shtype.SHT_NULL:
-        section_headers[nsec]=section_header
+        ELF.section_headers[nsec]=section_header
         if e_shtype.SHT_STRTAB == section_header["sh_type"]:
           f.seek(section_header["sh_offset"], 0)
           section_header["string_table"]=string_table.from_bytes(f.read(section_header["sh_size"]))
 
     # populate strings in section header
-    if elf_header["e_shstrndx"]>0:
+    if ELF.elf_header["e_shstrndx"]>0:
       try:
-        strs=section_headers[elf_header["e_shstrndx"]]["string_table"].strings
-        for i, s in section_headers.items():
+        strs=ELF.section_headers[ELF.elf_header["e_shstrndx"]]["string_table"].strings
+        for i, s in ELF.section_headers.items():
           if s["sh_name"] > 0:
             try:
               s["name"]=strs[s["sh_name"]]
               if ".strtab"==s["name"]:
-                sections["STRINGS"]=s["string_table"].strings
+                ELF.sections["STRINGS"]=s["string_table"].strings
               if ".symtab"==s["name"]:
-                sections["SYMTAB"]=s
+                ELF.sections["SYMTAB"]=s
             except:
               print("*** ERROR: string %s not found" % s["sh_name"])
               # don"t fail
@@ -355,16 +365,13 @@ def parse_elf_header(f):
         print("*** ERROR: string table section not found")
         # don't fail here
 
-    print("********** section header **********")
-    for i,s in section_headers.items():
-      print("%s:%s"%(i,s))
-    print("")
+    ELF.dump(ELF.section_headers, "section header")
     
     # populate symtables
-    symbols={}
+    ELF.symbols={}
     i=0
-    if "SYMTAB" in sections.keys():
-      s=sections["SYMTAB"]
+    if "SYMTAB" in ELF.sections.keys():
+      s=ELF.sections["SYMTAB"]
       f.seek(s["sh_offset"], 0)
       for idx in range(0, s["sh_size"], s["sh_entsize"]):
         symbol=read_fields(f, symbol_fields32)
@@ -375,16 +382,19 @@ def parse_elf_header(f):
             symbol["name"]=""
         else:
           symbol["name"]=""
-        symbols[i]=symbol
+        ELF.symbols[i]=symbol
         i += 1
         
     print("********** symbols **********")
     print(" #:ADDRESS \tSIZE\tBIND    \tTYPE      \tSECTION \tNAME")
-    for i, sym in symbols.items():
+    for i, sym in ELF.symbols.items():
       print("%s:%08x\t%s\t%s\t%s\t%s\t%s"%(
         i, sym["st_value"], sym["st_size"], sym["st_info"].st_bind.name, sym["st_info"].st_type.name, sym["st_shndx"], sym["name"]
       ))
     print("")
+    
+    # done
+    return ELF
     
 def main():
   print("self.py: simple elf file parser, (c) 2018 by juju2013")
@@ -401,7 +411,7 @@ def elf(fname):
       
     # parse headers
     print("")
-    parse_elf_header(elff)
+    return parse_elf_header(elff)
 
 if __name__ == "__main__" :
   main()
