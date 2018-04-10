@@ -377,7 +377,7 @@ def parse_elf_header(f):
         symbol=read_fields(f, symbol_fields32)
         if idx > 0 and symbol["st_name"] > 0:
           try:
-            symbol["name"]=sections["STRINGS"][symbol["st_name"]]
+            symbol["name"]=ELF.sections["STRINGS"][symbol["st_name"]]
           except:
             symbol["name"]=""
         else:
